@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================
-# Auto-Adaptive Nuclei Scanner (Robust Version)
+# Auto-Adaptive Nuclei Scanner (Optimized Version)
 # =========================
 
 # Colors
@@ -17,10 +17,10 @@ NC='\033[0m'
 SUBS_FILE=""
 RUN_HTTPX=false
 HTTPX_FILE=""
-TEMPLATES_DIR="$HOME/nuclei-templates"
+TEMPLATES_DIR="${HOME}/nuclei-templates"
 TEMPLATE_TYPE="all"
 STATUS_CODES="200|301|302|307|308|401|403|400|500"
-SCAN_DIR="$HOME/scan_results"
+SCAN_DIR="${HOME}/scan_results"
 VERBOSE=false
 LOG_FILE=""
 MAX_RETRIES=2
@@ -53,9 +53,18 @@ mkdir -p "$SCAN_DIR"
 [[ -n "$LOG_FILE" ]] && LOG_FILE="$SCAN_DIR/$LOG_FILE"
 
 # =========================
+# Cleanup on Ctrl+C
+# =========================
+cleanup() {
+    echo -e "${RED}\n[!] Interrupted! Killing all background jobs...${NC}"
+    jobs -p | xargs -r kill
+    exit 1
+}
+trap cleanup SIGINT
+
+# =========================
 # Robust Auto System Detection
 # =========================
-
 # CPU threads
 if command -v nproc >/dev/null 2>&1; then
     CPU_THREADS=$(nproc)
@@ -101,7 +110,7 @@ fi
 # =========================
 # Adaptive Tuning
 # =========================
-# Chunk size
+# Chunk size (adjusted dynamically)
 if (( MEM_AVAILABLE_MB < 2000 )); then
   CHUNK_SIZE=300
 elif (( MEM_AVAILABLE_MB < 4000 )); then
@@ -131,18 +140,17 @@ echo -e "Rate Limit    : ${GREEN}$RATE_LIMIT${NC}"
 echo ""
 
 # =========================
-# HTTPX (unchanged logic)
+# HTTPX
 # =========================
 if $RUN_HTTPX; then
+  echo -e "${GREEN}[+] Running HTTPX...${NC}"
   if [[ "$HTTPX_FILE" == "run" ]]; then
-    echo -e "${GREEN}[+] Running HTTPX...${NC}"
     httpx -l "$SUBS_FILE" -sc -ct -title -cname -server -td -cdn -o "$SCAN_DIR/live.txt"
-    grep -E "$STATUS_CODES" "$SCAN_DIR/live.txt" | awk '{print $1}' > "$SCAN_DIR/live_filtered.txt"
-    SUBS_FILE="$SCAN_DIR/live_filtered.txt"
   else
-    grep -E "$STATUS_CODES" "$HTTPX_FILE" | awk '{print $1}' > "$SCAN_DIR/live_filtered.txt"
-    SUBS_FILE="$SCAN_DIR/live_filtered.txt"
+    cp "$HTTPX_FILE" "$SCAN_DIR/live.txt"
   fi
+  grep -E "$STATUS_CODES" "$SCAN_DIR/live.txt" | awk '{print $1}' > "$SCAN_DIR/live_filtered.txt"
+  SUBS_FILE="$SCAN_DIR/live_filtered.txt"
 fi
 
 # =========================
@@ -162,29 +170,41 @@ run_chunk() {
   local f="$1"
   local try=0
   while (( try <= MAX_RETRIES )); do
-    if $VERBOSE; then
+    if $VERBOSE && [[ -n "$LOG_FILE" ]]; then
       nuclei -l "$f" -t "$TEMPLATES_DIR" -c "$CONCURRENCY" -rate-limit "$RATE_LIMIT" -timeout 15 -o "$f.out" 2>&1 | tee -a "$LOG_FILE"
+    elif $VERBOSE; then
+      nuclei -l "$f" -t "$TEMPLATES_DIR" -c "$CONCURRENCY" -rate-limit "$RATE_LIMIT" -timeout 15 -o "$f.out"
     else
       nuclei -l "$f" -t "$TEMPLATES_DIR" -c "$CONCURRENCY" -rate-limit "$RATE_LIMIT" -timeout 15 -silent -o "$f.out"
     fi
+
     [[ -s "$f.out" ]] && break
     ((try++))
   done
 }
 
 # =========================
-# Run scan
+# Run scan (optimized parallel execution)
 # =========================
 echo -e "${GREEN}[+] Starting Nuclei scan...${NC}"
 
+# Use a process pool to limit concurrency properly
+pids=()
 for f in "$CHUNK_PREFIX"*; do
   run_chunk "$f" &
-  while (( $(jobs -r | wc -l) >= CONCURRENCY )); do sleep 1; done
+  pids+=($!)
+
+  # Limit concurrent jobs
+  while (( $(jobs -r | wc -l) >= CONCURRENCY )); do
+    sleep 1
+  done
 done
 
-wait
+# Wait for all background processes
+wait "${pids[@]}"
 
-cat "$CHUNK_PREFIX"*.out | sort -u > "$OUTPUT_FILE"
+# Combine results
+cat "$CHUNK_PREFIX"*.out 2>/dev/null | sort -u > "$OUTPUT_FILE"
 
 echo -e "${CYAN}[✓] Scan completed successfully${NC}"
 echo -e "${CYAN}[✓] Results: $OUTPUT_FILE${NC}"
