@@ -1,6 +1,54 @@
 #!/bin/bash
 
 # =========================
+# Self Update & Install
+# =========================
+
+SCRIPT_NAME="nucleo"
+REPO_URL="https://github.com/amit-pathak009/nucleo"
+INSTALL_PATH="/usr/local/bin/${SCRIPT_NAME}"
+
+# Absolute path of current script
+SCRIPT_PATH="$(realpath "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
+self_update() {
+    if [[ -d "$SCRIPT_DIR/.git" ]]; then
+        echo "[*] Checking for updates..."
+        git -C "$SCRIPT_DIR" fetch --quiet
+
+        LOCAL_HASH=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+        REMOTE_HASH=$(git -C "$SCRIPT_DIR" rev-parse @{u})
+
+        if [[ "$LOCAL_HASH" != "$REMOTE_HASH" ]]; then
+            echo "[+] Update found. Pulling latest version..."
+            git -C "$SCRIPT_DIR" pull --rebase
+            echo "[+] Update complete. Re-running script..."
+            exec "$SCRIPT_PATH" "$@"
+        else
+            echo "[✓] Already up to date."
+        fi
+    else
+        echo "[!] Not a git repository. Skipping update check."
+    fi
+}
+
+self_install() {
+    if [[ ! -x "$INSTALL_PATH" ]]; then
+        echo "[*] Installing to $INSTALL_PATH"
+        sudo cp "$SCRIPT_PATH" "$INSTALL_PATH"
+        sudo chmod +x "$INSTALL_PATH"
+        echo "[✓] Installed. You can now run: ${SCRIPT_NAME}"
+    fi
+}
+
+# Run update check
+self_update "$@"
+
+# Install globally
+self_install
+
+# =========================
 # Auto-Adaptive Nuclei Scanner (Optimized Version)
 # =========================
 
